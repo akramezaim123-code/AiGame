@@ -287,6 +287,7 @@
   <div class="game-actions">
     <button class="btn btn-primary hidden" id="nextBtn" onclick="nextStep()">Next Step →</button>
     <button class="btn btn-success hidden" id="finishBtn" onclick="finishLevel()">🎉 Complete Level</button>
+    <button class="btn btn-secondary" id="homeBtn" onclick="confirmQuit()">🏠 Quit to Home</button>
   </div>
 </div>
 
@@ -356,6 +357,16 @@
     </div>
     <button class="btn btn-primary" onclick="retryLevel()">🔄 Retry Level</button>
     <button class="btn btn-secondary" onclick="showWorlds()">World Map 🗺️</button>
+  </div>
+</div>
+
+<!-- QUIT CONFIRM MODAL -->
+<div id="quitModal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>🏠 Quit to Home?</h2>
+    <p>Your progress on this level will be lost, but your overall score and completed levels are saved.</p>
+    <button class="btn btn-danger" onclick="doQuit()">Yes, Quit</button>
+    <button class="btn btn-secondary" onclick="cancelQuit()">No, Keep Playing</button>
   </div>
 </div>
 
@@ -1466,21 +1477,54 @@ function renderWorlds() {
 }
 
 function selectWorld(world) {
-  const progress = gameState.worldProgress[world.id] || { completed: 0, total: world.levels.length };
-  const availableLevels = world.levels.filter((lvl, i) => {
-    if (i === 0) return true;
-    if (lvl.isBoss) return progress.completed >= world.levels.length - 1;
-    return true;
+  // Show level selection screen instead of auto-starting
+  showLevelSelect(world);
+}
+
+function showLevelSelect(world) {
+  showScreen('gameScreen'); // Reuse game screen for level select
+
+  document.getElementById('gameTitle').textContent = `${world.icon} ${world.name} — Select Level`;
+  document.getElementById('bossBanner').classList.add('hidden');
+  document.getElementById('integralDisplay').textContent = 'Choose an integral to solve:';
+  document.getElementById('stepCounter').textContent = '';
+  document.getElementById('stepTitle').textContent = '';
+  document.getElementById('hintBtn').style.display = 'none';
+  document.getElementById('hintText').style.display = 'none';
+  document.getElementById('feedbackBox').classList.add('hidden');
+  document.getElementById('nextBtn').classList.add('hidden');
+  document.getElementById('finishBtn').classList.add('hidden');
+  document.getElementById('homeBtn').style.display = 'inline-flex';
+
+  // Hide hearts during level select
+  const heartsEl = document.getElementById('heartsDisplay');
+  if (heartsEl) heartsEl.style.display = 'none';
+
+  const container = document.getElementById('choicesContainer');
+  container.innerHTML = '';
+
+  world.levels.forEach((level, i) => {
+    const isCompleted = gameState.completedLevels[level.id];
+    const isBoss = level.isBoss;
+    const prevCompleted = i === 0 || gameState.completedLevels[world.levels[i-1].id];
+    const isLocked = !prevCompleted && !isCompleted;
+
+    const btn = document.createElement('button');
+    btn.className = 'choice-btn';
+    btn.style.cssText = isLocked ? 'opacity:0.5;cursor:not-allowed;' : '';
+
+    let status = '';
+    if (isCompleted) status = ' ✅';
+    else if (isBoss && !isLocked) status = ' ⚔️';
+    else if (isLocked) status = ' 🔒';
+
+    btn.innerHTML = `<span class="choice-letter">${i+1}</span><span>${level.integral}${status}</span>`;
+
+    if (!isLocked) {
+      btn.onclick = () => startLevel(world, level);
+    }
+    container.appendChild(btn);
   });
-
-  if (availableLevels.length === 0) {
-    alert('Complete previous levels first!');
-    return;
-  }
-
-  // Start with first available non-boss, or boss if unlocked
-  const targetLevel = availableLevels.find(l => !l.isBoss) || availableLevels[0];
-  startLevel(world, targetLevel);
 }
 
 // ==================== GAME LOGIC ====================
@@ -1493,6 +1537,11 @@ function startLevel(world, level) {
   gameState.hearts = gameState.maxHearts;
 
   showScreen('gameScreen');
+
+  // Show hearts and hint button during gameplay
+  const heartsEl = document.getElementById('heartsDisplay');
+  if (heartsEl) heartsEl.style.display = 'block';
+  document.getElementById('hintBtn').style.display = 'inline-block';
 
   document.getElementById('gameTitle').textContent = `${world.icon} ${world.name}`;
   document.getElementById('bossBanner').classList.toggle('hidden', !level.isBoss);
@@ -1516,10 +1565,15 @@ function renderStep() {
   gameState.currentShuffled = shuffled;
   gameState.currentCorrectIndex = shuffled.findIndex(c => c.correct);
 
+  // Reset hint for this step
+  gameState.hintUsed = false;
+  document.getElementById('hintBtn').disabled = false;
+  document.getElementById('hintBtn').textContent = '💡 Hint (-50 pts)';
+  document.getElementById('hintText').classList.remove('show');
+
   document.getElementById('stepCounter').textContent = `Step ${gameState.currentStep + 1} of ${level.steps.length}`;
   document.getElementById('stepTitle').textContent = step.title;
   document.getElementById('hintText').textContent = step.hint;
-  document.getElementById('hintText').classList.remove('show');
   document.getElementById('feedbackBox').classList.add('hidden');
   document.getElementById('nextBtn').classList.add('hidden');
   document.getElementById('finishBtn').classList.add('hidden');
@@ -1646,6 +1700,21 @@ function showCombo() {
   setTimeout(() => indicator.classList.remove('show'), 2000);
 }
 
+function confirmQuit() {
+  document.getElementById('quitModal').classList.remove('hidden');
+}
+
+function cancelQuit() {
+  document.getElementById('quitModal').classList.add('hidden');
+}
+
+function doQuit() {
+  document.getElementById('quitModal').classList.add('hidden');
+  // Save current progress
+  saveState();
+  showHome();
+}
+
 function updateHeartsDisplay() {
   const heartsEl = document.getElementById('heartsDisplay');
   if (!heartsEl) return;
@@ -1673,12 +1742,36 @@ function savePlayerName() {
     return;
   }
 
-  gameState.playerName = name;
+  // Check if this player already exists - if so, load their data
+  const existingPlayer = gameState.leaderboard.find(e => e.name === name);
+  if (existingPlayer) {
+    // Load existing player data
+    gameState.playerName = existingPlayer.name;
+    gameState.score = existingPlayer.score || 0;
+    gameState.bestStreak = existingPlayer.streak || 0;
+    gameState.trophies = existingPlayer._trophies || existingPlayer.worlds || 0;
+    gameState.completedLevels = existingPlayer._completedLevels || {};
+    gameState.worldProgress = existingPlayer._worldProgress || {};
+  } else {
+    // New player - start fresh
+    gameState.playerName = name;
+    gameState.score = 0;
+    gameState.streak = 0;
+    gameState.bestStreak = 0;
+    gameState.trophies = 0;
+    gameState.completedLevels = {};
+    gameState.worldProgress = {};
+  }
+
+  gameState.hearts = 3;
   error.style.display = 'none';
   input.style.borderColor = '#334155';
+  input.value = '';
   document.getElementById('nameEntryModal').classList.add('hidden');
   updatePlayerNameDisplay();
+  updateHeaderStats();
   saveState();
+  showHome();
 }
 
 function showNameEntry() {
